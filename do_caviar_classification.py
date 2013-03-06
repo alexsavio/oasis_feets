@@ -479,7 +479,83 @@ def calculate_neigh_graph (X, dist_thr=None):
     dists[kd >= dist_thr] = 1
     dists[kd <  dist_thr] = 0
 
-    return dists
+    return dists.astype(int)
+
+#-------------------------------------------------------------------------------
+def random_classify (X, y, n_learners):
+
+    n_subjs = len(y)
+    n_feats = X.shape[1]
+
+    rmax = X.max()
+    rmin = X.min()
+
+    h = np.zeros((n_subjs, n_learners), dtype=int)
+
+    for i in np.arange(n_subjs):
+        x = X[i,:]
+        l = y[i]
+
+        rvals = (rmax - rmin) * np.random.random(n_learners) + rmin
+
+        ridx  = np.random.random_integers (0, n_feats-1, n_learners)
+
+        rh    = (x[ridx] >= rvals).astype(int)
+        rh[rh == 0] = -1
+
+        h[i, :] = rh
+
+    return h
+
+
+#-------------------------------------------------------------------------------
+#CAVIAR
+def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
+
+    n_subjs    = data.shape[0]
+
+    lambd      = 0.01
+    k          = int(np.floor(n_subjs * 0.05))
+    dist_thr   = np.arange(0,250,2)
+    #beta = 1 / (average distance between all samples)
+
+    ct = StratifiedKFold(y, n_folds)
+
+    fc = 0
+    for train, test in ct:
+        print '.',
+
+        #train and test sets
+        try:
+            X_train, X_test, y_train, y_test = data[train,:], data[test,:], y[train], y[test]
+
+        except:
+            debug_here()
+
+        #training and validation set
+        cv = StratifiedKFold(y_train, n_folds - 1)
+        for valt, valv in cv:
+            try:
+                X_valt, X_valv, y_valt, y_valv = X_train[valt,:], X_train[valv,:], y_train[valt], y_train[valv]
+            except:
+                debug_here()
+
+        #weight matrix
+        w = np.zeros(n_subjs, n_learners)
+
+        #nearest neighbor graph G
+        g = calculate_neigh_graph (X_valt)
+
+        #normalizing training data
+        #scaler  = MinMaxScaler((-1,1))
+        #scaler  = StandardScaler()
+        #X_valt = scaler.fit_transform(X_valt)
+        #X_valv = scaler.transform    (X_valv)
+
+        #random weaklearner
+        h = random_classify (X_valt, y_valt, n_learners)
+
+        
 
 #-------------------------------------------------------------------------------
 
@@ -544,14 +620,6 @@ def main(argv=None):
     probs   = {} #np.zeros((n_subjs, n_class))
     best_p  = {}
 
-    #cross validation
-    if cvfold == '10':
-        ct = StratifiedKFold(y, 10)
-    elif cvfold == 'loo':
-        ct = LeaveOneOut(len(y))
-    elif cvfold == 'cv':
-        ct = StratifiedKFold(y, n_folds)
-
     #CAVIAR
     n_folds    = 5
     n_learners = 20
@@ -562,34 +630,10 @@ def main(argv=None):
 
     y[y == 0] = -1
 
-    ct = StratifiedKFold(y, n_folds)
+    do_caviar (data, y, lambd, n_learners, n_folds)
 
-    fc = 0
-    for train, test in ct:
-        print '.',
 
-        #train and test sets
-        try:
-            X_train, X_test, y_train, y_test = data[train,:], data[test,:], y[train], y[test]
 
-        except:
-            debug_here()
-
-        #training and validation set
-        cv = StratifiedKFold(y_train, n_folds - 1)
-        for train, test in cv:
-            try:
-                X_valt, X_valv, y_valt, y_valv = X_train[train,:], X_train[test,:], y_train[train], y_train[test]
-            except:
-                debug_here()
-
-        #weight matrix
-        w = np.zeros(n_subjs, n_learners)
-
-        #nearest neighbot graph G
-        g = calculate_neigh_graph (X_valt)
-
-        
 
 
 

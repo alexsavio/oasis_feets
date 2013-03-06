@@ -100,7 +100,7 @@ for feats in featstypes:
 
 #-------------------------------------------------------------------------------
 def set_parser():
-    fsmethods    = ['none', 'stats'] # ONLY UNSUPERVISED FEATURE EXTRACTION METHODS HERE, NOT 'rfe', 'rfecv', 'univariate', 'fdr', 'fpr', 'extratrees', 'pca', 'rpca', 'lda'] #svmweights
+    fsmethods    = ['none', 'stats', 'hist3d']  # ONLY UNSUPERVISED FEATURE EXTRACTION METHODS HERE, NOT 'rfe', 'rfecv', 'univariate', 'fdr', 'fpr', 'extratrees', 'pca', 'rpca', 'lda'] #svmweights
     feats        = ['jacs','smoothmodgm','modulatedgm', 'geodan', 'norms', 'trace']
     outs         = ['.npy','.mat']
 
@@ -113,6 +113,7 @@ def set_parser():
     parser.add_argument('-f', '--feats',     dest='feats',    default='jacs', choices=feats, required=False, help='deformation measure type')
     parser.add_argument(      '--otype',     dest='otype',    default='.npy', choices=outs,  required=False, help='output file type.')
 
+    parser.add_argument('--bins',            dest='bins',     default=10, required=False, type=int, help='Number of bins in each dimension of the volume to calculate the histogram features.')
     parser.add_argument('--smoothmm',        dest='smoothmm', default=0, required=False, type=int, help='Size of a Gaussian smooth filter for each image before selecting features.')
     parser.add_argument('--fsmethod',        dest='fsmethod', default='rfe', choices=fsmethods, required=False, help='Feature selection method')
 
@@ -175,6 +176,11 @@ def append_to_list (mylist, preffix):
 #-------------------------------------------------------------------------------
 def join_path_to_filelist (path, mylist):
     return list({os.path.join(path, str(item)) for item in mylist})
+
+#-------------------------------------------------------------------------------
+def save_feats_file (feats, otype, outfname):
+    if   otype == '.npy': np.save(outfname + '.npy', feats)
+    elif otype == '.mat': sio.savemat(outfname + '.mat', dict(feats = feats))
 
 #-------------------------------------------------------------------------------
 def get_fsmethod (fsmethod, n_feats, n_subjs):
@@ -339,6 +345,59 @@ def load_data (subjsf, datadir, msk, smoothmm=0):
     return X, y, scores, imgsiz, indices 
 
 #-------------------------------------------------------------------------------
+def calculate_stats (data):
+    n_subjs = data.shape[0]
+
+    feats  = np.zeros((n_subjs, 7))
+
+    feats[:,0] = fs.max (axis=1)
+    feats[:,1] = fs.min (axis=1)
+    feats[:,2] = fs.mean(axis=1)
+    feats[:,3] = fs.var (axis=1)
+    feats[:,4] = np.median      (fs, axis=1)
+    feats[:,5] = stats.kurtosis (fs, axis=1)
+    feats[:,6] = stats.skew     (fs, axis=1)
+
+    return feats
+
+#-------------------------------------------------------------------------------
+def calculate_hist3d (data, bins):
+    n_subjs = data.shape[0]
+
+    feats = np.zeros((n_subjs, bins*bins*bins))
+
+    for s in np.arange(n_subjs):
+        H, edges = np.histogramdd(data[s,], bins = (bins, bins, bins))
+        feats[s,:] = H.flatten()
+
+    return feats
+
+#-------------------------------------------------------------------------------
+def create_feature_sets (fsmethod, fsgrid, data, msk, y, outdir, outbasename, otype):
+    n_subjs = data.shape[0]
+
+    aalinfo = np.loadtxt (roilabsf, dtype=str)
+
+    np.savetxt (os.path.join(outdir, outbasename + '_labels.txt'), y, fmt="%.2f")
+
+    outfname = os.path.join(outdir, outbasename)
+    au.log.info('Creating ' + outfname)
+
+    fs = data[:, msk > 0]
+
+    if fsmethod == 'stats':
+        feats = calculate_stats (fs)
+
+    elif fsmethod == 'hist3d':
+        feats = calculate_hist3d (fs)
+
+    elif fsmethod == 'none':
+        feats = fs
+
+    #save file
+    save_feats_file (feats, otype, outfname)
+
+#-------------------------------------------------------------------------------
 def create_feature_sets (fsmethod, fsgrid, data, msk, y, roilst, roiflst, roilabsf, outdir, outbasename, otype):
 
     n_subjs = data.shape[0]
@@ -379,11 +438,11 @@ def create_feature_sets (fsmethod, fsgrid, data, msk, y, roilst, roiflst, roilab
             feats = data[:, roivol > 0]
 
         #save file
-        if   otype == '.npy': np.save(outfname + '.npy', feats)
-        elif otype == '.mat': sio.savemat(outfname + '.mat', dict(feats = feats))
+        save_feats_file (feats, otype, outfname)
+
 
 #-------------------------------------------------------------------------------
-def main_do  (datadir, subjlstf, smoothmm, feats, outdir, roisdir, roilabsf, fsmethod, otype):
+def main_do  (datadir, subjlstf, bins, smoothmm, feats, outdir, roisdir, roilabsf, fsmethod, otype):
 
     #create outdir if it does not exist
     if not outdir:
@@ -398,8 +457,8 @@ def main_do  (datadir, subjlstf, smoothmm, feats, outdir, roisdir, roilabsf, fsm
 
     #fsmethod
     fsgrid = None
-    if fsmethod != 'stats' and fsmethod != 'none':
-        fsmethod, fsgrid = get_fsmethod (fsmethod, n_feats, n_subjs)
+    #if fsmethod != 'stats' and fsmethod != 'none' and fsmethod != 'hist3d':
+    #    fsmethod, fsgrid = get_fsmethod (fsmethod, n_feats, n_subjs)
 
     roilst = None
     if roilabsf:
@@ -424,8 +483,10 @@ def main_do  (datadir, subjlstf, smoothmm, feats, outdir, roisdir, roilabsf, fsm
     y = y.astype(int)
 
     #create space for all features and read from subjects
-    create_feature_sets (fsmethod, fsgrid, data, msk, y, roilst, roiflst, aalinfo, outdir, outbasename, otype)
-
+    if roilst:
+        create_feature_sets (fsmethod, fsgrid, data, msk, y, roilst, roiflst, aalinfo, outdir, outbasename, otype)
+    else:
+        create_feature_sets (fsmethod, fsgrid, data, msk, y, bins, outdir, outbasename, otype)
 
 #-------------------------------------------------------------------------------
 def main():
@@ -448,12 +509,13 @@ def main():
     fsmethod  = args.fsmethod.strip()
     otype     = args.otype.strip()
     smoothmm  = args.smoothmm
+    bins      = args.bins
     verbose   = args.verbosity
 
     #logging config
     au.setup_logger(verbose)
 
-    return main_do (datadir, subjlstf, smoothmm, feats, outdir, roisdir, roilabsf, fsmethod, otype)
+    return main_do (datadir, subjlstf, bins, smoothmm, feats, outdir, roisdir, roilabsf, fsmethod, otype)
 
 #-------------------------------------------------------------------------------
 if __name__ == "__main__":
