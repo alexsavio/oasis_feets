@@ -507,6 +507,17 @@ def random_classify (X, y, n_learners):
 
     return h
 
+#-------------------------------------------------------------------------------
+def cross_sum(g):
+    n_elems = g.shape[0]
+    cs = np.zeros(n_elems, dtype=g.dtype)
+
+    for i in np.arange(n_elems):
+        mask    = np.ones(n_elems).astype(bool)
+        mask[i] = False
+        cs[i]   = np.sum(g[i,mask]) + np.sum(g[mask,i])
+
+    return cs
 
 #-------------------------------------------------------------------------------
 #CAVIAR
@@ -541,7 +552,9 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
                 debug_here()
 
         #weight matrix
-        w = np.zeros(n_subjs, n_learners)
+        n_tsubjs = X_valt.shape[0]
+
+        w = np.zeros((n_tsubjs, n_learners))
 
         #nearest neighbor graph G
         g = calculate_neigh_graph (X_valt)
@@ -555,7 +568,21 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #random weaklearner
         h = random_classify (X_valt, y_valt, n_learners)
 
-        
+        #optimization
+        H = np.dot(h, h.transpose())
+
+        D = H + 2*lambd* np.diag(cross_sum (g))
+        D = np.diag(np.diag(D))
+
+        ymat = np.reshape(np.tile(y_valt, n_learners), (len(y_valt),n_learners))
+        b = ymat * h
+
+        #weight matrix solved
+        x = np.linalg.solve(D + D.transpose(), b)
+
+        #where does the validation part go?
+
+        #testing part
 
 #-------------------------------------------------------------------------------
 
