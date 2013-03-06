@@ -551,10 +551,11 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
             except:
                 debug_here()
 
-        #weight matrix
+
+        #optimization: finding weight matrix
         n_tsubjs = X_valt.shape[0]
 
-        w = np.zeros((n_tsubjs, n_learners))
+        #w = np.zeros((n_tsubjs, n_learners))
 
         #nearest neighbor graph G
         g = calculate_neigh_graph (X_valt)
@@ -568,7 +569,7 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #random weaklearner
         h = random_classify (X_valt, y_valt, n_learners)
 
-        #optimization
+        #linear equations
         H = np.dot(h, h.transpose())
 
         D = H + 2*lambd* np.diag(cross_sum (g))
@@ -578,11 +579,14 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         b = ymat * h
 
         #weight matrix solved
-        x = np.linalg.solve(D + D.transpose(), b)
+        W = np.linalg.solve(D + D.transpose(), b)
 
         #where does the validation part go?
 
         #testing part
+        tdists = sdist.cdist(X_valt, X_valv, 'euclidean')
+        
+
 
 #-------------------------------------------------------------------------------
 
