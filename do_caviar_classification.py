@@ -469,17 +469,34 @@ def append_to_keys (mydict, preffix):
     return {preffix + str(key) : (transform(value) if isinstance(value, dict) else value) for key, value in mydict.items()}
 
 #-------------------------------------------------------------------------------
-def calculate_neigh_graph (X, dist_thr=None):
-    dists = sdist.squareform(sdist.pdist(X, 'euclidean'))
-    kd    = dists.copy()
+def calculate_neigh_graph (X, k):
+    dists  = sdist.squareform(sdist.pdist(X, 'euclidean'))
+
+    neighs = np.zeros_like(dists)
+
+    #if not dist_thr:
+    #    dist_thr = kd.mean()
+
+    #dists[kd >= dist_thr] = 1
+    #dists[kd <  dist_thr] = 0
+    for i in np.arange(dists.shape[0]):
+        idx = np.argsort(dists[i,:])
+        neighs[i,idx[-k:]] = 1
+
+    return neighs.astype(int), dists
+
+#-------------------------------------------------------------------------------
+def calculate_neigh_graph_with_distthr (X, dist_thr=None):
+    dists  = sdist.squareform(sdist.pdist(X, 'euclidean'))
+    neighs = dists.copy()
 
     if not dist_thr:
-        dist_thr = kd.mean()
+        dist_thr = dists.mean()
 
-    dists[kd >= dist_thr] = 1
-    dists[kd <  dist_thr] = 0
+    neighs[dists >= dist_thr] = 1
+    neighs[dists <  dist_thr] = 0
 
-    return dists.astype(int)
+    return neighs.astype(int), dists
 
 #-------------------------------------------------------------------------------
 def random_classify (X, y, n_learners):
@@ -497,15 +514,18 @@ def random_classify (X, y, n_learners):
         l = y[i]
 
         rvals = (rmax - rmin) * np.random.random(n_learners) + rmin
-
         ridx  = np.random.random_integers (0, n_feats-1, n_learners)
 
-        rh    = (x[ridx] >= rvals).astype(int)
+        rh = (x[ridx] >= rvals).astype(int)
         rh[rh == 0] = -1
 
         h[i, :] = rh
 
     return h
+
+#-------------------------------------------------------------------------------
+def symmetrize(a):
+    return a + a.T - numpy.diag(a.diagonal())
 
 #-------------------------------------------------------------------------------
 def cross_sum(g):
@@ -515,15 +535,15 @@ def cross_sum(g):
     for i in np.arange(n_elems):
         mask    = np.ones(n_elems).astype(bool)
         mask[i] = False
-        cs[i]   = np.sum(g[i,mask]) + np.sum(g[mask,i])
+        cs  [i] = np.sum(g[i,mask]) + np.sum(g[mask,i])
 
     return cs
 
 #-------------------------------------------------------------------------------
-def calculate_weightmat (X, y, h, lambd, n_learners):
+def calculate_weightmat (X, y, h, lambd, k, n_learners):
 
     #nearest neighbor graph G
-    g = calculate_neigh_graph (X)
+    g, dists = calculate_neigh_graph (X, k)
 
     #linear equations
     H = np.dot(h, h.transpose())
@@ -536,8 +556,23 @@ def calculate_weightmat (X, y, h, lambd, n_learners):
 
     #weight matrix solved
     w = np.linalg.solve(d + d.transpose(), b)
+    #w = np.linalg.cholesky()
 
     return w
+
+#-------------------------------------------------------------------------------
+def calculate_nearest_neighbors (XA, XB, dist_thr=None):
+
+    dists = sdist.cdist(XA, XB, 'euclidean')
+    kd    = dists.copy()
+
+    if not dist_thr:
+        dist_thr = dists.mean()
+
+    dists[kd >= dist_thr] = 1
+    dists[kd <  dist_thr] = 0
+
+    return dists.astype(int), kd
 
 #-------------------------------------------------------------------------------
 #CAVIAR
@@ -546,7 +581,6 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
     n_subjs    = data.shape[0]
 
     lambd      = 0.01
-    k          = int(np.floor(n_subjs * 0.05))
     dist_thr   = np.arange(0,250,2)
     #beta = 1 / (average distance between all samples)
 
@@ -563,7 +597,7 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         except:
             debug_here()
 
-        #training and validation set
+        #extract validation set
         cv = StratifiedKFold(y_train, n_folds - 1)
         for valt, valv in cv:
             try:
@@ -574,29 +608,41 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
         #optimization: finding weight matrix
         n_tsubjs = X_valt.shape[0]
+        n_vsubjs = X_valv.shape[0]
+
+        k = int(np.floor(n_tsubjs * 0.05))
 
         #w = np.zeros((n_tsubjs, n_learners))
 
         #normalizing training data
-        #scaler  = MinMaxScaler((-1,1))
-        #scaler  = StandardScaler()
+        #scaler  = MinMaxScaler((0,250))
         #X_valt = scaler.fit_transform(X_valt)
         #X_valv = scaler.transform    (X_valv)
 
         #random weaklearner
         h = random_classify (X_valt, y_valt, n_learners)
 
-        w = calculate_weightmat (X_valt, y_valt, h, lambd, n_learners)
+        #svm weaklearner
+        #clfmethod = 'linsvm'
+        #classif, clp = get_clfmethod (clfmethod, n_feats, n_subjs, n_jobs=2)
+        #classif = classif.fit(X_valt, y_valt)
+        #classif.predict(X_valv)
+
+        w = calculate_weightmat (X_valt, y_valt, h, lambd, k, n_learners)
 
         #VALIDATION
+        neighs, dists = calculate_nearest_neighbors (X_valt, X_valv, dist_thr=None)
 
+        beta = dists.mean()
+
+        alpha  = np.exp(beta * dists) * neighs
+        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_vsubjs), (n_tsubjs, n_vsubjs))
+        alpha  = np.divide(alpha, salpha)
+
+        np.sign(np.sum(alpha, axis=1) * np.sum(w*h, axis=1))
 
         #TEST
-        tdists = calculate_test_distances (X_valt, X_valv)
-
-
-
-        tdists = sdist.cdist(X_valt, X_valv, 'euclidean')
+        
         
 
 
