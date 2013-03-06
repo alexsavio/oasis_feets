@@ -520,6 +520,26 @@ def cross_sum(g):
     return cs
 
 #-------------------------------------------------------------------------------
+def calculate_weightmat (X, y, h, lambd, n_learners):
+
+    #nearest neighbor graph G
+    g = calculate_neigh_graph (X)
+
+    #linear equations
+    H = np.dot(h, h.transpose())
+
+    d = H + 2*lambd*np.diag(cross_sum (g))
+    d = np.diag(np.diag(d))
+
+    ymat = np.reshape(np.tile(y, n_learners), (len(y),n_learners))
+    b = ymat * h
+
+    #weight matrix solved
+    w = np.linalg.solve(d + d.transpose(), b)
+
+    return w
+
+#-------------------------------------------------------------------------------
 #CAVIAR
 def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
@@ -557,9 +577,6 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
         #w = np.zeros((n_tsubjs, n_learners))
 
-        #nearest neighbor graph G
-        g = calculate_neigh_graph (X_valt)
-
         #normalizing training data
         #scaler  = MinMaxScaler((-1,1))
         #scaler  = StandardScaler()
@@ -569,21 +586,16 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #random weaklearner
         h = random_classify (X_valt, y_valt, n_learners)
 
-        #linear equations
-        H = np.dot(h, h.transpose())
+        w = calculate_weightmat (X_valt, y_valt, h, lambd, n_learners)
 
-        D = H + 2*lambd* np.diag(cross_sum (g))
-        D = np.diag(np.diag(D))
+        #VALIDATION
 
-        ymat = np.reshape(np.tile(y_valt, n_learners), (len(y_valt),n_learners))
-        b = ymat * h
 
-        #weight matrix solved
-        W = np.linalg.solve(D + D.transpose(), b)
+        #TEST
+        tdists = calculate_test_distances (X_valt, X_valv)
 
-        #where does the validation part go?
 
-        #testing part
+
         tdists = sdist.cdist(X_valt, X_valv, 'euclidean')
         
 
