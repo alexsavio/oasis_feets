@@ -189,112 +189,6 @@ def list_search (regex, list):
     filt = re.compile(regex).search
     return list_filter(list, filt)
 
-#-------------------------------------------------------------------------------
-def pre_featsel (X, y, method, thr=95):
-
-    #pre feature selection, measuring distances
-    #Pearson correlation
-    if method == 'pearson':
-        au.log.info ('Calculating Pearson correlation')
-        m = np.abs(pearson_correlation (X, y))
-
-    #Bhattacharyya distance
-    elif method == 'bhattacharyya':
-        au.log.info ('Calculating Bhattacharyya distance')
-        m = bhattacharyya_dist (X, y)
-
-    #Welch's t-test
-    elif method == 'welcht':
-        au.log.info ("Calculating Welch's t-test")
-        m = welch_ttest (X, y)
-
-    #threshold data
-    if method != 'none':
-        mt = au.threshold_robust_range (m, thr)
-
-    return mt
-
-#-------------------------------------------------------------------------------
-def pearson_correlation (X, y):
-
-    #number of features
-    n_feats = X.shape[1]
-
-    #creating output volume file
-    p = np.zeros(n_feats)
-
-    #calculating pearson accross all subjects
-    for i in range(X.shape[1]):
-      p[i] = stats.pearsonr (X[:,i], y)[0]
-
-    p[np.isnan(p)] = 0
-
-    return p
-
-
-#-------------------------------------------------------------------------------
-def bhattacharyya_dist (X, y):
-
-    classes = np.unique(y)
-    n_class = len(classes)
-    n_feats = X.shape[1]
-
-    b = np.zeros(n_feats)
-    for i in np.arange(n_class):
-        for j in np.arange(i+1, n_class):
-            if j > i:
-                xi = X[y == i, :]
-                xj = X[y == j, :]
-
-                mi = np.mean (xi, axis=0)
-                mj = np.mean (xj, axis=0)
-
-                vi = np.var  (xi, axis=0)
-                vj = np.var  (xj, axis=0)
-
-                si = np.std  (xi, axis=0)
-                sj = np.std  (xj, axis=0)
-
-                d  = 0.25 * (np.square(mi - mj) / (vi + vj)) + 0.5  * (np.log((vi + vj) / (2*si*sj)))
-                d[np.isnan(d)] = 0
-                d[np.isinf(d)] = 0
-
-                b = np.maximum(b, d)
-
-    return b
-
-#-------------------------------------------------------------------------------
-def welch_ttest (X, y):
-
-    classes = np.unique(y)
-    n_class = len(classes)
-    n_feats = X.shape[1]
-
-    b = np.zeros(n_feats)
-    for i in np.arange(n_class):
-        for j in np.arange(i+1, n_class):
-            if j > i:
-                xi = X[y == i, :]
-                xj = X[y == j, :]
-                yi = y[y == i]
-                yj = y[y == j]
-
-                mi = np.mean (xi, axis=0)
-                mj = np.mean (xj, axis=0)
-
-                vi = np.var  (xi, axis=0)
-                vj = np.var  (xj, axis=0)
-
-                n_subjsi = len(yi)
-                n_subjsj = len(yj)
-
-                t = (mi - mj) / np.sqrt((np.square(vi) / n_subjsi) + (np.square(vj) / n_subjsj))
-                t[np.isnan(t)] = 0
-                t[np.isinf(t)] = 0
-
-                b = np.maximum(b, t)
-
-    return b
 
 #-------------------------------------------------------------------------------
 def classification_metrics (targets, preds, probs=None):
@@ -504,17 +398,20 @@ def calculate_neigh_graph_with_distthr (X, dist_thr=None):
     return neighs.astype(int), dists
 
 #-------------------------------------------------------------------------------
-def random_classify (X, n_learners):
+def random_classify (X, n_learners, ridx=None, rmin=None, rmax=None):
 
     n_subjs = X.shape[0]
     n_feats = X.shape[1]
 
     h = np.zeros((n_subjs, n_learners), dtype=int)
 
-    ridx  = np.random.random_integers (0, n_feats-1, n_learners)
+    if ridx == None:
+        ridx  = np.random.random_integers (0, n_feats-1, n_learners)
+    if rmax == None:
+        rmax = X.max(axis=0)
+    if rmin == None:
+        rmin = X.min(axis=0)
 
-    rmax = X.max(axis=0)
-    rmin = X.min(axis=0)
     rvals = (rmax[ridx] - rmin[ridx]) * np.random.random(n_learners) + rmin[ridx]
 
     for i in np.arange(n_subjs):
@@ -525,7 +422,7 @@ def random_classify (X, n_learners):
 
         h[i, :] = rh
 
-    return h
+    return h, n_learners, ridx, rmin, rmax
 
 #-------------------------------------------------------------------------------
 def symmetrize(a):
@@ -577,12 +474,14 @@ def calculate_weightmat (X, y, h, lambd, k, n_learners):
                 D[rini:rfin,cini:cfin] = k_k
 
     #b_t
-    ymat = np.reshape(np.tile(y, n_learners), (n_learners,len(y)))
-    b = (ymat * h).flatten()
+    ymat = np.reshape(np.tile(y, n_learners), (n_learners, len(y)))
+    b = (ymat * h.T).flatten()
 
     #weight matrix solved
     w = np.linalg.solve(D.transpose()+D, 2*b)
+
     #w = np.linalg.cholesky()
+    w = w.reshape(n_learners, len(y))
 
     return w
 
@@ -647,7 +546,7 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #X_valv = scaler.transform    (X_valv)
 
         #random weaklearner
-        h = random_classify (X_valt, n_learners)
+        h_valt, n_learners, ridx, rmin, rmax = random_classify (X_valt, n_learners)
 
         #svm weaklearner
         #clfmethod = 'linsvm'
@@ -655,7 +554,7 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #classif = classif.fit(X_valt, y_valt)
         #classif.predict(X_valv)
 
-        w = calculate_weightmat (X_valt, y_valt, h, lambd, k, n_learners)
+        w = calculate_weightmat (X_valt, y_valt, h_valt, lambd, k, n_learners)
 
         #VALIDATION
         neighs, dists = calculate_nearest_neighbors (X_valt, X_valv, dist_thr=None)
@@ -670,20 +569,31 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #Hval = np.sign(np.sum(alpha, axis=1) * np.sum(w*h, axis=1))
 
         #TEST
-        h = random_classify (X_train, n_learners)
+        h_train, n_learners, ridx, rmin, rmax = random_classify (X_train, n_learners, ridx, rmin, rmax)
 
-        w = calculate_weightmat (X_train, y_train, h, lambd, k, n_learners)
+        w = calculate_weightmat (X_train, y_train, h_train, lambd, k, n_learners)
 
-        neighs, dists = calculate_nearest_neighbors (X_train, X_test, beta)
+        neighs, test_dists = calculate_nearest_neighbors (X_train, np.atleast_2d(X_test), dists.mean())
+        a_sk_num = np.exp(beta * test_dists)
 
-        alpha  = np.exp(beta * dists) * neighs
-        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_test), (n_test, n_train)).transpose()
+        H = np.zeros(n_test, dtype=int)
+        for k in range(n_test):
+            x = X_test[k,:]
+            a_sk_x_num = a_sk_num[neighs[:,k].astype(bool), k]
+            a_sk_x = a_sk_x_num / np.sum(a_sk_x_num)
 
-        alpha  = np.divide(alpha, salpha)
+            h_t = random_classify (np.atleast_2d(x), n_learners, ridx, rmin, rmax)[0]
+            h_t = h_t.flatten()
 
-        h_t = random_classify (X_test, n_learners)
+            w_t = w[:,neighs[:,k].astype(bool)]
 
-        H = np.sign(np.sum(alpha, axis=0) * np.sum(np.dot(w,h_t.T), axis=0))
+            h_tta = np.reshape(np.tile(h_t, w_t.shape[1]), (w_t.shape[1], n_learners))
+
+            H_t = np.sum(a_sk_x * np.sum(w_t * h_tta.T, axis=0))
+
+            pred_t = np.sign(H_t)
+
+            H[k] = pred_t
 
         out = classification_metrics (y_test, H)
         
