@@ -297,9 +297,12 @@ def welch_ttest (X, y):
     return b
 
 #-------------------------------------------------------------------------------
-def classification_metrics (targets, preds, probs):
-    fpr, tpr, thresholds = roc_curve(targets, probs[:, 1])
-    roc_auc = auc(fpr, tpr)
+def classification_metrics (targets, preds, probs=None):
+
+    roc_auc = 0
+    if probs:
+        fpr, tpr, thresholds = roc_curve(targets, probs[:, 1])
+        roc_auc = auc(fpr, tpr)
 
     cm = confusion_matrix(targets, preds)
 
@@ -481,7 +484,9 @@ def calculate_neigh_graph (X, k):
     #dists[kd <  dist_thr] = 0
     for i in np.arange(dists.shape[0]):
         idx = np.argsort(dists[i,:])
-        neighs[i,idx[-k:]] = 1
+        neighs[i,idx[:k]] = 1
+
+    #should we zero the diagonal and select k+1 neighbours?
 
     return neighs.astype(int), dists
 
@@ -499,22 +504,21 @@ def calculate_neigh_graph_with_distthr (X, dist_thr=None):
     return neighs.astype(int), dists
 
 #-------------------------------------------------------------------------------
-def random_classify (X, y, n_learners):
+def random_classify (X, n_learners):
 
-    n_subjs = len(y)
+    n_subjs = X.shape[0]
     n_feats = X.shape[1]
-
-    rmax = X.max()
-    rmin = X.min()
 
     h = np.zeros((n_subjs, n_learners), dtype=int)
 
+    ridx  = np.random.random_integers (0, n_feats-1, n_learners)
+
+    rmax = X.max(axis=0)
+    rmin = X.min(axis=0)
+    rvals = (rmax[ridx] - rmin[ridx]) * np.random.random(n_learners) + rmin[ridx]
+
     for i in np.arange(n_subjs):
         x = X[i,:]
-        l = y[i]
-
-        rvals = (rmax - rmin) * np.random.random(n_learners) + rmin
-        ridx  = np.random.random_integers (0, n_feats-1, n_learners)
 
         rh = (x[ridx] >= rvals).astype(int)
         rh[rh == 0] = -1
@@ -525,17 +529,17 @@ def random_classify (X, y, n_learners):
 
 #-------------------------------------------------------------------------------
 def symmetrize(a):
-    return a + a.T - numpy.diag(a.diagonal())
+    return a + a.T - np.diag(a.diagonal())
 
 #-------------------------------------------------------------------------------
 def cross_sum(g):
     n_elems = g.shape[0]
     cs = np.zeros(n_elems, dtype=g.dtype)
 
-    for i in np.arange(n_elems):
-        mask    = np.ones(n_elems).astype(bool)
-        mask[i] = False
-        cs  [i] = np.sum(g[i,mask]) + np.sum(g[mask,i])
+    for k in np.arange(n_elems):
+        #mask    = np.ones(n_elems).astype(bool)
+        #mask[k] = False
+        cs  [k] = np.sum(g[k,:]) + np.sum(g[:,k]) - 2
 
     return cs
 
@@ -544,18 +548,40 @@ def calculate_weightmat (X, y, h, lambd, k, n_learners):
 
     #nearest neighbor graph G
     g, dists = calculate_neigh_graph (X, k)
+    #g = symmetrize(g)
+    #g [g>1] = 1
+    S = cross_sum(g)
 
     #linear equations
-    H = np.dot(h, h.transpose())
+    #H = np.dot(h, h.transpose())
+    #building the D matrix (page 4)
+    n_subjs = X.shape[0]
+    dsiz    = n_subjs * n_learners
+    D       = np.zeros((dsiz,dsiz))
 
-    d = H + 2*lambd*np.diag(cross_sum (g))
-    d = np.diag(np.diag(d))
+    for k in range(n_subjs):
+        h_k = np.dot(np.atleast_2d(h[k,:]).T, np.atleast_2d(h[k,:]))
+        b_k = h_k + 2*lambd*S[k]*np.eye(n_learners)
+        ini = k*n_learners
+        fin = (k+1)*n_learners
+        D[ini:fin,ini:fin] = b_k
 
-    ymat = np.reshape(np.tile(y, n_learners), (len(y),n_learners))
-    b = ymat * h
+    for i in range(n_subjs):
+        for j in range(n_subjs):
+            if i != j:
+                k_k  = - 2*lambd*g[i,j]*np.eye(n_learners)
+                rini = i*n_learners
+                rfin = (i+1)*n_learners
+                cini = j*n_learners
+                cfin = (j+1)*n_learners
+                D[rini:rfin,cini:cfin] = k_k
+
+    #b_t
+    ymat = np.reshape(np.tile(y, n_learners), (n_learners,len(y)))
+    b = (ymat * h).flatten()
 
     #weight matrix solved
-    w = np.linalg.solve(d + d.transpose(), b)
+    w = np.linalg.solve(D.transpose()+D, 2*b)
     #w = np.linalg.cholesky()
 
     return w
@@ -569,8 +595,8 @@ def calculate_nearest_neighbors (XA, XB, dist_thr=None):
     if not dist_thr:
         dist_thr = dists.mean()
 
-    dists[kd >= dist_thr] = 1
-    dists[kd <  dist_thr] = 0
+    dists[kd >= dist_thr] = 0
+    dists[kd <  dist_thr] = 1
 
     return dists.astype(int), kd
 
@@ -580,7 +606,6 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
     n_subjs    = data.shape[0]
 
-    lambd      = 0.01
     dist_thr   = np.arange(0,250,2)
     #beta = 1 / (average distance between all samples)
 
@@ -593,7 +618,6 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #train and test sets
         try:
             X_train, X_test, y_train, y_test = data[train,:], data[test,:], y[train], y[test]
-
         except:
             debug_here()
 
@@ -607,10 +631,13 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
 
         #optimization: finding weight matrix
-        n_tsubjs = X_valt.shape[0]
-        n_vsubjs = X_valv.shape[0]
+        n_train = X_train.shape[0]
+        n_test  = X_test.shape [0]
 
-        k = int(np.floor(n_tsubjs * 0.05))
+        n_valt  = X_valt.shape[0]
+        n_valv  = X_valv.shape[0]
+
+        k = int(np.floor(n_valt * 0.05))
 
         #w = np.zeros((n_tsubjs, n_learners))
 
@@ -620,7 +647,7 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #X_valv = scaler.transform    (X_valv)
 
         #random weaklearner
-        h = random_classify (X_valt, y_valt, n_learners)
+        h = random_classify (X_valt, n_learners)
 
         #svm weaklearner
         #clfmethod = 'linsvm'
@@ -633,16 +660,32 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
         #VALIDATION
         neighs, dists = calculate_nearest_neighbors (X_valt, X_valv, dist_thr=None)
 
-        beta = dists.mean()
+        beta = 1/dists.mean()
 
         alpha  = np.exp(beta * dists) * neighs
-        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_vsubjs), (n_tsubjs, n_vsubjs))
+        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_valv), (n_valv, n_valt)).transpose()
+
         alpha  = np.divide(alpha, salpha)
 
-        np.sign(np.sum(alpha, axis=1) * np.sum(w*h, axis=1))
+        #Hval = np.sign(np.sum(alpha, axis=1) * np.sum(w*h, axis=1))
 
         #TEST
-        
+        h = random_classify (X_train, n_learners)
+
+        w = calculate_weightmat (X_train, y_train, h, lambd, k, n_learners)
+
+        neighs, dists = calculate_nearest_neighbors (X_train, X_test, beta)
+
+        alpha  = np.exp(beta * dists) * neighs
+        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_test), (n_test, n_train)).transpose()
+
+        alpha  = np.divide(alpha, salpha)
+
+        h_t = random_classify (X_test, n_learners)
+
+        H = np.sign(np.sum(alpha, axis=0) * np.sum(np.dot(w,h_t.T), axis=0))
+
+        out = classification_metrics (y_test, H)
         
 
 
@@ -699,7 +742,7 @@ def main(argv=None):
     classif, clp = get_clfmethod (clfmethod, n_feats, n_subjs, n_cpus)
 
     #feature selection method instance
-    fsmethod, fsp = get_fsmethod (fsname, n_feats, n_subjs, n_cpus)
+    #fsmethod, fsp = get_fsmethod (fsname, n_feats, n_subjs, n_cpus)
 
     #results variables
     preds   = {}
