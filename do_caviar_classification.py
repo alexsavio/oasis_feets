@@ -378,9 +378,12 @@ def calculate_neigh_graph (X, k):
     #dists[kd <  dist_thr] = 0
     for i in np.arange(dists.shape[0]):
         idx = np.argsort(dists[i,:])
-        neighs[i,idx[:k]] = 1
+        neighs[i,idx[:k+1]] = 1
 
-    #should we zero the diagonal and select k+1 neighbours?
+    #should we zero the diagonal and select k+1 neighbours? #
+    #That is what we are doing now
+    #here Im supposing that the diagonal will always be 1 for all subjects
+    neighs[np.diag_indices_from(neighs)] = 20
 
     return neighs.astype(int), dists
 
@@ -595,9 +598,9 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
             H[k] = pred_t
 
-        out = classification_metrics (y_test, H)
-        
+        perfs = classification_metrics (y_test, H)
 
+        return H, perfs
 
 #-------------------------------------------------------------------------------
 
@@ -672,107 +675,9 @@ def main(argv=None):
 
     y[y == 0] = -1
 
-    do_caviar (data, y, lambd, n_learners, n_folds)
+    preds, perfs = do_caviar (data, y, lambd, n_learners, n_folds)
 
-
-
-
-
-
-        #scaling
-        if clfmethod == 'svm' or clfmethod == 'linsvm' or clfmethod == 'sgd':
-            #scale_min = -1
-            #scale_max = 1
-            #[X_train, dmin, dmax] = au.rescale (X_train, scale_min, scale_max)
-            #[X_test,  emin, emax] = au.rescale (X_test,  scale_min, scale_max, dmin, dmax)
-            scaler  = MinMaxScaler((-1,1))
-            #scaler  = StandardScaler()
-            X_train = scaler.fit_transform(X_train)
-            X_test  = scaler.transform(X_test)
-
-        #classifier instance
-        elif clfmethod == 'gmm':
-            classif.means_ = np.array([X_train[y_train == i].mean(axis=0)
-                             for i in xrange(n_class)])
-
-        #PRE feature selection
-        if prefsmethod != 'none':
-            sc_train = scores[train]
-            presels  = pre_featsel (X_train, y_train, prefsmethod, prefsthr)
-            X_train = X_train[:, presels > 0]
-            X_test  = X_test [:, presels > 0]
-
-        #creating grid search pipeline
-        if fsname != 'stats':
-            #fsp   = append_to_keys(fsp, fsname + '__')
-            pipe   = Pipeline([ ('fs', fsmethod), ('cl', classif) ])
-            clap   = append_to_keys(clp, 'cl__')
-            fisp   = append_to_keys(fsp, 'fs__')
-            params = dict(clap.items() + fisp.items())
-            gs     = GridSearchCV (pipe, params, n_jobs=n_cpus, verbose=0)
-        else:
-            gs     = GridSearchCV (classif, clp, n_jobs=n_cpus, verbose=0)
-
-        if fsname == 'univariate':
-            gs.fit(X_train, sc_train)
-        else:
-            gs.fit(X_train, y_train)
-
-        #save predictions
-        preds [fc] = gs.predict(X_test)
-
-        train_pred = gs.predict(X_train)
-
-            #AUC score based on training classification
-            roc_auc = 0
-            if hasattr(classif, 'predict_proba'):
-                rprobs = gs.predict_proba(X_train)
-
-                rfpr, rtpr, rthresholds = roc_curve(y_train, rprobs[:, 1], 1)
-                roc_auc = auc(rfpr, rtpr)
-
-                probs [fc] = rprobs
-            else:
-                rfpr, rtpr, rthresholds = roc_curve(y_train, train_pred, 1)
-                roc_auc = auc(rfpr, rtpr)
-
-            rscore [fc] = roc_auc
-            f1score[fc] = f1_score(y_train, train_pred)
-            #save other parameters
-            best_p[fc] = gs.best_params_
-            truth [fc] = y_test
-
-            fc += 1
-
-        #results[roinom] = classification_metrics (y, preds, probs)
-        results[roinom] = {}
-        results[roinom]['clfmethod']        = clfmethod
-        results[roinom]['cv']               = cv
-        results[roinom]['cvgrid']           = clp
-        results[roinom]['preds']            = preds
-        results[roinom]['truth']            = truth
-        results[roinom]['probs']            = probs
-        results[roinom]['best_params']      = best_p
-        results[roinom]['train_auc_scores'] = rscore
-        results[roinom]['train_f1_scores']  = f1score
-
-    #saving results
-    if not outdir:
-        outdir = datadir
-
-    outfname = os.path.join(outdir, 'test_' + cvfold + '_' + clfmethod + '_' + feats)
-    if prefsmethod != 'none':
-        outfname += '_' + prefsmethod + str(prefsthr)
-    outfname += '_' + fsname
-
-    #np.savez (outfname + '.npz', results)
-    #np.save  (outfname + '.npy', results)
-    of = open(outfname + '.pickle', 'w')
-    pickle.dump (results, of)
-    of.close()
-
-    #inf = open(outfname + '.pickle', 'r')
-    #res = pickle.load(inf)
+    print(perfs)
 
 #-------------------------------------------------------------------------------
 if __name__ == "__main__":
