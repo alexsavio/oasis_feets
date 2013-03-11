@@ -89,8 +89,8 @@ libdir = '/home/alexandre/Dropbox/Documents/phd/work/oasis_feets'
 sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/aizkolari')
 import aizkolari_utils as au
 
-sys.path.append(libdir)
-from do_warpfield_featsets import *
+sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/oasis_feets')
+import do_caviar_classification as cav
 
 hn = au.get_hostname()
 if hn == 'azteca':
@@ -109,28 +109,22 @@ elif hn == 'hpmed':
 verbose   = 2
 au.setup_logger(verbose, logfname=None)
 
-otype = '.npy'
-
-smoothmm = 0
-
-bins = 6
-
 maskf = os.path.join(libdir, 'MNI152_T1_1mm_brain_mask_dil.nii.gz')
 
 df   = os.path.join(dd, 'oasis_warpfield_hist3d.npy')
 labf = os.path.join(dd, 'oasis_warpfield_hist3d_labels.txt')
 
-labels = np.loadtxt(labf).astype(int)
+y = np.loadtxt(labf).astype(int)
 data   = np.load(df)
 
-n_cpus = 2
+#CAVIAR
+n_folds    = 5
+n_learners = 20
+lambd      = 0.01
 
-clfmethod = 'linsvm'
-fsname    = 'none'
+y[y == 0] = -1
 
-cvfold = 'cv'
-n_folds = 10
-
+preds, perfs = cav.do_caviar (data, y, lambd, n_learners, n_folds)
 
 '''
 
@@ -656,14 +650,6 @@ def main(argv=None):
 
     #feature selection method instance
     #fsmethod, fsp = get_fsmethod (fsname, n_feats, n_subjs, n_cpus)
-
-    #results variables
-    preds   = {}
-    truth   = {}
-    rscore  = {} #np.zeros(n_subjs) #ROI weights, based on AUC
-    f1score = {} #np.zeros(n_subjs) #ROI weights, based on F1-score
-    probs   = {} #np.zeros((n_subjs, n_class))
-    best_p  = {}
 
     #CAVIAR
     n_folds    = 5
