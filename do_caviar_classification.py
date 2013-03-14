@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+import logging
 import argparse
 import numpy as np
 import nibabel as nib
@@ -76,34 +77,36 @@ from sklearn.pipeline import Pipeline, FeatureUnion
 #debugging
 from IPython.core.debugger import Tracer; debug_here = Tracer()
 
-sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/aizkolari')
-import aizkolari_utils as au
+global log
 
 #python execution:
 '''
 import os
 import sys
 
+sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/aizkolari')
+import aizkolari_utils as au
+
 libdir = '/home/alexandre/Dropbox/Documents/phd/work/oasis_feets'
 
 sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/aizkolari')
 import aizkolari_utils as au
 
-sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/oasis_feets')
+sys.path.append('/home/alexandre/Dropbox/Documents/phd/work/caviar')
 import do_caviar_classification as cav
 
 hn = au.get_hostname()
 if hn == 'azteca':
     wd = '/media/data/oasis_aal'
-    dd = '/home/alexandre/Dropbox/Documents/phd/work/oasis_feets'
+    dd = '/home/alexandre/Dropbox/Documents/phd/work/caviar'
     outd = '/media/data/oasis_hist3d'
 elif hn == 'corsair':
     wd = '/media/alexandre/alextenso/work/oasis_svm'
-    dd = '/home/alexandre/Dropbox/Documents/phd/work/oasis_feets'
+    dd = '/home/alexandre/Dropbox/Documents/phd/work/caviar'
     outd = '/scratch/oasis_hist3d'
 elif hn == 'hpmed':
     wd = '/media/alexandre/iba/data/oasis'
-    dd = '/home/alexandre/Dropbox/Documents/phd/work/oasis_feets'
+    dd = '/home/alexandre/Dropbox/Documents/phd/work/caviar'
     outd = '/media/alexandre/iba/data/oasis'
 
 verbose   = 2
@@ -208,14 +211,7 @@ def classification_metrics (targets, preds, probs=None):
     if len(cm) == 2:
         tnr = float(cm[0,0])/(cm[0,0] + cm[0,1])
 
-    out = {}
-    out['accuracy'] = accuracy
-    out['recall'] = recall
-    out['precision'] = precision
-    out['tnr'] = tnr
-    out['roc_auc'] = roc_auc
-
-    return out
+    return accuracy, recall, precision, tnr, roc_auc
 
 #-------------------------------------------------------------------------------
 def plot_roc_curve (targets, preds, probs):
@@ -337,7 +333,7 @@ def parse_subjects_list (fname, datadir=''):
         f.close()
 
     except:
-        au.log.error( "Unexpected error: ", sys.exc_info()[0] )
+        log.error( "Unexpected error: ", sys.exc_info()[0] )
         debug_here()
         sys.exit(-1)
 
@@ -351,7 +347,7 @@ def shelve_vars (ofname, varlist):
       try:
          mashelf[key] = globals()[key]
       except:
-         au.log.error('ERROR shelving: {0}'.format(key))
+         log.error('ERROR shelving: {0}'.format(key))
 
    mashelf.close()
 
@@ -419,7 +415,7 @@ def random_classify (X, n_learners, ridx=None, rmin=None, rmax=None):
 
         h[i, :] = rh
 
-    return h, n_learners, ridx, rmin, rmax
+    return h, ridx, rmin, rmax
 
 #-------------------------------------------------------------------------------
 def symmetrize(a):
@@ -453,6 +449,7 @@ def calculate_weightmat (X, y, h, lambd, k, n_learners):
     dsiz    = n_subjs * n_learners
     D       = np.zeros((dsiz,dsiz))
 
+    #fat diagonal
     for k in range(n_subjs):
         h_k = np.dot(np.atleast_2d(h[k,:]).T, np.atleast_2d(h[k,:]))
         b_k = h_k + 2*lambd*S[k]*np.eye(n_learners)
@@ -460,6 +457,7 @@ def calculate_weightmat (X, y, h, lambd, k, n_learners):
         fin = (k+1)*n_learners
         D[ini:fin,ini:fin] = b_k
 
+    #non diagonal elements
     for i in range(n_subjs):
         for j in range(n_subjs):
             if i != j:
@@ -483,6 +481,21 @@ def calculate_weightmat (X, y, h, lambd, k, n_learners):
     return w
 
 #-------------------------------------------------------------------------------
+def calculate_k_nearest_neighbors (XA, XB, k):
+
+    dists = sdist.cdist(XA, XB, 'euclidean')
+
+    neighs = np.zeros_like(dists)
+
+    idx = dists.argsort(axis=0)
+
+    for i in np.arange(dists.shape[1]):
+        neighs[idx[:k,i],i] = 1
+
+    return neighs.astype(int), dists
+
+#-------------------------------------------------------------------------------
+
 def calculate_nearest_neighbors (XA, XB, dist_thr=None):
 
     dists = sdist.cdist(XA, XB, 'euclidean')
@@ -497,15 +510,83 @@ def calculate_nearest_neighbors (XA, XB, dist_thr=None):
     return dists.astype(int), kd
 
 #-------------------------------------------------------------------------------
+class bunch:
+    __init__ = lambda self, **kw: setattr(self, '__dict__', kw)
+
+#-------------------------------------------------------------------------------
+def fit_caviar (X, y, lambd, n_neighs=None, n_learners=20):
+
+    n_subjs = X.shape[0]
+    n_feats = X.shape[1]
+
+    if not n_neighs:
+        n_neighs = int(np.floor(n_subjs * 0.05))
+
+    #random weaklearner
+    h, ridx, rmin, rmax = random_classify (X, n_learners)
+
+    w = calculate_weightmat (X, y, h, lambd, n_neighs, n_learners)
+
+    caviar = bunch()
+    caviar.weights    = w
+    caviar.X          = X
+    caviar.n          = n_subjs
+    caviar.n_neighs   = n_neighs
+    caviar.ridx       = ridx
+    caviar.rmin       = rmin
+    caviar.rmax       = rmax
+    caviar.n_learners = n_learners
+
+    return caviar
+
+#-------------------------------------------------------------------------------
+def predict_caviar(caviar, X, dist):
+
+    n_subjs = X.shape[0]
+
+    neighs, dists = calculate_nearest_neighbors (caviar.X, X, dist)
+
+    beta = 1/(np.sum(dists*neighs)/np.sum(neighs))
+
+    alpha  = np.exp(beta * dists) * neighs
+    salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_subjs), (n_subjs, caviar.n)).transpose()
+
+    alpha  = np.divide(alpha, salpha)
+    alpha  = np.nan_to_num(alpha)
+
+    a_sk_num = np.exp(beta * dists)
+
+    h = np.zeros(n_subjs, dtype=int)
+    for k in range(n_subjs):
+        x = X[k,:]
+
+        a_sk_x_num = a_sk_num[neighs[:,k].astype(bool), k]
+
+        a_sk_x = a_sk_x_num / np.sum(a_sk_x_num)
+
+        h_t = random_classify (np.atleast_2d(x), caviar.n_learners, caviar.ridx, caviar.rmin, caviar.rmax)[0]
+
+        h_t = h_t.flatten()
+
+        w_t = caviar.weights[:,neighs[:,k].astype(bool)]
+
+        h_tta = np.reshape(np.tile(h_t, w_t.shape[1]), (w_t.shape[1], n_learners))
+
+        hh_t = np.sum(a_sk_x * np.sum(w_t * h_tta.T, axis=0))
+
+        pred_t = np.sign(hh_t)
+
+        h[k] = pred_t
+
+    return h
+
+#-------------------------------------------------------------------------------
 #CAVIAR
 def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
 
-    n_subjs    = data.shape[0]
-
-    dist_thr   = np.arange(0,250,2)
-    #beta = 1 / (average distance between all samples)
-
     ct = StratifiedKFold(y, n_folds)
+
+    preds = []
 
     fc = 0
     for train, test in ct:
@@ -525,76 +606,63 @@ def do_caviar (data, y, lambd=0.01, n_learners=20, n_folds=5):
             except:
                 debug_here()
 
-
-        #optimization: finding weight matrix
-        n_train = X_train.shape[0]
-        n_test  = X_test.shape [0]
-
-        n_valt  = X_valt.shape[0]
-        n_valv  = X_valv.shape[0]
-
-        k = int(np.floor(n_valt * 0.05))
-
-        #w = np.zeros((n_tsubjs, n_learners))
-
-        #normalizing training data
-        #scaler  = MinMaxScaler((0,250))
-        #X_valt = scaler.fit_transform(X_valt)
-        #X_valv = scaler.transform    (X_valv)
-
-        #random weaklearner
-        h_valt, n_learners, ridx, rmin, rmax = random_classify (X_valt, n_learners)
-
-        #svm weaklearner
-        #clfmethod = 'linsvm'
-        #classif, clp = get_clfmethod (clfmethod, n_feats, n_subjs, n_jobs=2)
-        #classif = classif.fit(X_valt, y_valt)
-        #classif.predict(X_valv)
-
-        w = calculate_weightmat (X_valt, y_valt, h_valt, lambd, k, n_learners)
-
         #VALIDATION
-        neighs, dists = calculate_nearest_neighbors (X_valt, X_valv, dist_thr=None)
+        #fit model with validation training set
+        caviar_valt = fit_caviar (X_valt, y_valt, lambd, n_neighs=None, n_learners=20)
 
-        beta = 1/dists.mean()
+        #search space for neighbors distance during test
+        dists      = sdist.squareform(sdist.pdist(X_valt, 'euclidean'))
+        dist_range = np.linspace (np.min(dists), np.max(dists), 250)
+        best_acc   = 0.0
 
-        alpha  = np.exp(beta * dists) * neighs
-        salpha = np.reshape( np.tile(np.sum(alpha, axis=1), n_valv), (n_valv, n_valt)).transpose()
+        for d in dist_range:
+            #predict validation test set
+            h_valv = predict_caviar (caviar_valt, X_valv, d)
 
-        alpha  = np.divide(alpha, salpha)
+            accuracy, recall, precision, tnr, roc_auc = classification_metrics (y_valv, h_valv)
 
-        #Hval = np.sign(np.sum(alpha, axis=1) * np.sum(w*h, axis=1))
+            if accuracy > best_acc:
+                best_d   = d
+                best_acc = perfs_valv['accuracy']
 
         #TEST
-        h_train, n_learners, ridx, rmin, rmax = random_classify (X_train, n_learners, ridx, rmin, rmax)
+        caviar_train = fit_caviar (X_train, y_train, lambd, n_neighs=None, n_learners=20)
 
-        w = calculate_weightmat (X_train, y_train, h_train, lambd, k, n_learners)
+        h_test = predict_caviar (caviar_train, X_test, best_d)
 
-        neighs, test_dists = calculate_nearest_neighbors (X_train, np.atleast_2d(X_test), dists.mean())
-        a_sk_num = np.exp(beta * test_dists)
+        targets.append(y_test)
+        preds.append(h_test)
 
-        H = np.zeros(n_test, dtype=int)
-        for k in range(n_test):
-            x = X_test[k,:]
-            a_sk_x_num = a_sk_num[neighs[:,k].astype(bool), k]
-            a_sk_x = a_sk_x_num / np.sum(a_sk_x_num)
+        fc += 1
 
-            h_t = random_classify (np.atleast_2d(x), n_learners, ridx, rmin, rmax)[0]
-            h_t = h_t.flatten()
+        #calculating overall performance
+        for p in np.arange(len(preds)):
+            accuracy, recall, precision, tnr, roc_auc = classification_metrics (targets[i], preds[i])
+            accuracies += accuracy
+            recalls    += recall
+            precisions += precision
+            tnrs       += tnr
 
-            w_t = w[:,neighs[:,k].astype(bool)]
+        accuracies /= len(preds)
+        recalls    /= len(preds)
+        precisions /= len(preds)
+        tnrs       /= len(preds)
 
-            h_tta = np.reshape(np.tile(h_t, w_t.shape[1]), (w_t.shape[1], n_learners))
+    return preds, accuracies, recalls, precisions, tnrs
 
-            H_t = np.sum(a_sk_x * np.sum(w_t * h_tta.T, axis=0))
+#-------------------------------------------------------------------------------
+def setup_logger (verbosity=1):
+    #define log level
+    if verbosity == 0:
+     lvl = logging.WARNING
+    elif verbosity == 1:
+     lvl = logging.INFO
+    elif verbosity == 2:
+     lvl = logging.DEBUG
+    else:
+     lvl = logging.WARNING
 
-            pred_t = np.sign(H_t)
-
-            H[k] = pred_t
-
-        perfs = classification_metrics (y_test, H)
-
-        return H, perfs
+    log = logging.Logger('caviarpy', lvl)
 
 #-------------------------------------------------------------------------------
 
@@ -622,8 +690,8 @@ def main(argv=None):
     n_folds     = args.nfolds
     n_cpus      = args.ncpus
     verbose     = args.verbosity
-    
-    au.setup_logger(verbose, logfname=None)
+
+    setup_logger(verbose, logfname=None)
 
     scale = True
 
